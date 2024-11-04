@@ -2,7 +2,9 @@ using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.IO;
 using UnityEngine;
+using System;
 
 [System.Serializable]
 public class Account
@@ -17,17 +19,26 @@ public class Account
     }
 }
 
+[System.Serializable]
+class AccountListWrapper
+{
+    public List<Account> accounts;
+}
+
 public class ServerManager : MonoBehaviour
 {
     private List<Account> accounts = new List<Account>();
     private TcpListener listener;
+    private Dictionary<int, Account> connectedClients = new Dictionary<int, Account>();
     private TcpClient client;
     private NetworkStream stream;
 
     public int port = 12345;
+    private string accountsFilePath = "accounts.json";
 
     private void Start()
     {
+        LoadAccounts();
         StartServer();
     }
 
@@ -41,16 +52,34 @@ public class ServerManager : MonoBehaviour
 
     private async void ListenForClients()
     {
-        while (true)
+        try
         {
-            client = await listener.AcceptTcpClientAsync();
-            Debug.Log("Client connected!");
-            stream = client.GetStream();
-            ReceiveMessagesFromClient();
+            while (true)
+            {
+                if (listener == null)
+                {
+                    Debug.LogWarning("Listener is null or has been stopped.");
+                    break;
+                }
+
+                client = await listener.AcceptTcpClientAsync();
+                Debug.Log("Client connected!");
+
+                if (client != null)
+                {
+                    stream = client.GetStream();
+                    ReceiveMessagesFromClient(client.Client.RemoteEndPoint.GetHashCode());
+                }
+            }
+        }
+        catch (ObjectDisposedException)
+        {
+            Debug.Log("Listener has been stopped and disposed.");
         }
     }
 
-    private async void ReceiveMessagesFromClient()
+
+    private async void ReceiveMessagesFromClient(int clientId)
     {
         byte[] buffer = new byte[1024];
         int bytesRead;
@@ -61,30 +90,45 @@ public class ServerManager : MonoBehaviour
             if (bytesRead == 0) break;
 
             string message = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-            Debug.Log($"Received message from client: {message}");
-            ReceiveMessageFromClient(message);
+            Debug.Log($"Received message from client {clientId}: {message}");
+            ReceiveMessageFromClient(clientId, message);
         }
 
-        Debug.Log("Client disconnected.");
-        client.Close();
+        Debug.Log($"Client {clientId} disconnected.");
+        if (client != null)
+        {
+            client.Close();
+        }
     }
 
-    public void HandleLoginRequest(string username, string password)
+    public void HandleLoginRequest(int clientId, string username, string password)
     {
-        foreach (Account account in accounts)
+        Account existingAccount = accounts.Find(account => account.username == username);
+        if (existingAccount != null)
         {
-            if (account.username == username && account.password == password)
+            if (existingAccount.password == password)
             {
                 Debug.Log($"Login successful for {username}");
+                AssociateClientWithAccount(clientId, existingAccount);
                 SendResponseToClient("LOGIN_SUCCESS");
                 return;
             }
+            else
+            {
+                Debug.Log($"Login failed for {username}: Incorrect password.");
+                SendResponseToClient("LOGIN_FAILED");
+                return;
+            }
         }
-        Debug.Log($"Login failed for {username}");
-        SendResponseToClient("LOGIN_FAILED");
+        else
+        {
+            Debug.Log($"Login failed for {username}: Account does not exist.");
+            SendResponseToClient("ACCOUNT_NOT_FOUND");
+            return;
+        }
     }
 
-    public void HandleCreateAccountRequest(string username, string password)
+    public void HandleCreateAccountRequest(int clientId, string username, string password)
     {
         foreach (Account account in accounts)
         {
@@ -98,8 +142,19 @@ public class ServerManager : MonoBehaviour
 
         Account newAccount = new Account(username, password);
         accounts.Add(newAccount);
+        SaveAccounts();
         Debug.Log($"Account created successfully for {username}");
         SendResponseToClient("ACCOUNT_CREATION_SUCCESS");
+    }
+
+
+    private void AssociateClientWithAccount(int clientId, Account account)
+    {
+        if (!connectedClients.ContainsKey(clientId))
+        {
+            connectedClients[clientId] = account;
+            Debug.Log($"Client {clientId} associated with account {account.username}");
+        }
     }
 
     private void SendResponseToClient(string message)
@@ -116,7 +171,7 @@ public class ServerManager : MonoBehaviour
         }
     }
 
-    public void ReceiveMessageFromClient(string message)
+    public void ReceiveMessageFromClient(int clientId, string message)
     {
         string[] parts = message.Split('|');
         if (parts.Length < 1) return;
@@ -127,14 +182,36 @@ public class ServerManager : MonoBehaviour
             if (parts.Length != 3) return;
             string username = parts[1];
             string password = parts[2];
-            HandleLoginRequest(username, password);
+            HandleLoginRequest(clientId, username, password);
         }
         else if (command == "CREATE_ACCOUNT")
         {
             if (parts.Length != 3) return;
             string username = parts[1];
             string password = parts[2];
-            HandleCreateAccountRequest(username, password);
+            HandleCreateAccountRequest(clientId, username, password);
+        }
+    }
+
+    private void SaveAccounts()
+    {
+        string json = JsonUtility.ToJson(new AccountListWrapper { accounts = this.accounts });
+        File.WriteAllText(accountsFilePath, json);
+        Debug.Log("Accounts saved.");
+    }
+
+    private void LoadAccounts()
+    {
+        if (File.Exists(accountsFilePath))
+        {
+            string json = File.ReadAllText(accountsFilePath);
+            AccountListWrapper loadedData = JsonUtility.FromJson<AccountListWrapper>(json);
+            this.accounts = loadedData.accounts ?? new List<Account>();
+            Debug.Log("Accounts loaded.");
+        }
+        else
+        {
+            Debug.Log("No account data found. Starting with an empty account list.");
         }
     }
 

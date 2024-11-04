@@ -120,12 +120,13 @@ public class NetworkServer : MonoBehaviour
     private bool AcceptIncomingConnection()
     {
         NetworkConnection connection = networkDriver.Accept();
-        if (connection == default(NetworkConnection))
-            return false;
+        if (!connection.IsCreated) 
+        return false;
 
         networkConnections.Add(connection);
         return true;
     }
+
 
     private bool PopNetworkEventAndCheckForData(NetworkConnection networkConnection, out NetworkEvent.Type networkEventType, out DataStreamReader streamReader, out NetworkPipeline pipelineUsedToSendEvent)
     {
