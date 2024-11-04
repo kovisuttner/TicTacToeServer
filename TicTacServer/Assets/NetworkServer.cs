@@ -12,7 +12,7 @@ public class NetworkServer : MonoBehaviour
     NetworkPipeline reliableAndInOrderPipeline;
     NetworkPipeline nonReliableNotInOrderedPipeline;
 
-    const ushort NetworkPort = 9001;
+    const ushort NetworkPort = 8080;
 
     const int MaxNumberOfClientConnections = 1000;
 
