@@ -78,86 +78,81 @@ public class ServerManager : MonoBehaviour
         }
     }
 
-
-    private async void ReceiveMessagesFromClient(int clientId)
+    private void ReceiveMessagesFromClient(int clientId)
     {
-        byte[] buffer = new byte[1024];
-        int bytesRead;
-
-        while (true)
+        try
         {
-            bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
-            if (bytesRead == 0) break;
-
+            byte[] buffer = new byte[1024];
+            int bytesRead = stream.Read(buffer, 0, buffer.Length);
             string message = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-            Debug.Log($"Received message from client {clientId}: {message}");
-            ReceiveMessageFromClient(clientId, message);
-        }
 
-        Debug.Log($"Client {clientId} disconnected.");
-        if (client != null)
+            if (!string.IsNullOrEmpty(message))
+            {
+                ProcessMessageFromClient(clientId, message);
+            }
+        }
+        catch (Exception ex)
         {
-            client.Close();
+            Debug.LogWarning($"Error receiving message: {ex.Message}");
         }
     }
 
-    public void HandleLoginRequest(int clientId, string username, string password)
+    private void ProcessMessageFromClient(int clientId, string message)
     {
-        Account existingAccount = accounts.Find(account => account.username == username);
-        if (existingAccount != null)
+        string[] parts = message.Split('|');
+        if (parts.Length < 2)
         {
-            if (existingAccount.password == password)
-            {
-                Debug.Log($"Login successful for {username}");
-                AssociateClientWithAccount(clientId, existingAccount);
-                SendResponseToClient("LOGIN_SUCCESS");
-                return;
-            }
-            else
-            {
-                Debug.Log($"Login failed for {username}: Incorrect password.");
-                SendResponseToClient("LOGIN_FAILED");
-                return;
-            }
+            Debug.Log("Invalid message format.");
+            return;
+        }
+
+        switch (parts[0])
+        {
+            case "LOGIN":
+                HandleLogin(clientId, parts[1], parts[2]); 
+                break;
+            case "CREATE_ACCOUNT":
+                HandleCreateAccount(clientId, parts[1], parts[2]); 
+                break;
+            default:
+                Debug.Log("Unknown request: " + parts[0]);
+                break;
+        }
+    }
+
+    private void HandleLogin(int clientId, string username, string password)
+    {
+        Account account = accounts.Find(a => a.username == username);
+        if (account != null && account.password == password)
+        {
+            SendMessageToClient("LOGIN_SUCCESS|" + username, clientId);  
+        }
+        else if (account == null)
+        {
+            SendMessageToClient("ACCOUNT_NOT_FOUND", clientId);
         }
         else
         {
-            Debug.Log($"Login failed for {username}: Account does not exist.");
-            SendResponseToClient("ACCOUNT_NOT_FOUND");
-            return;
+            SendMessageToClient("LOGIN_FAILED", clientId);
         }
     }
 
-    public void HandleCreateAccountRequest(int clientId, string username, string password)
+    private void HandleCreateAccount(int clientId, string username, string password)
     {
-        foreach (Account account in accounts)
+        if (accounts.Exists(a => a.username == username))
         {
-            if (account.username == username)
-            {
-                Debug.Log($"Account creation failed: Username {username} already exists.");
-                SendResponseToClient("ACCOUNT_CREATION_FAILED");
-                return;
-            }
+            SendMessageToClient("ACCOUNT_CREATION_FAILED", clientId);
         }
-
-        Account newAccount = new Account(username, password);
-        accounts.Add(newAccount);
-        SaveAccounts();
-        Debug.Log($"Account created successfully for {username}");
-        SendResponseToClient("ACCOUNT_CREATION_SUCCESS");
-    }
-
-
-    private void AssociateClientWithAccount(int clientId, Account account)
-    {
-        if (!connectedClients.ContainsKey(clientId))
+        else
         {
-            connectedClients[clientId] = account;
-            Debug.Log($"Client {clientId} associated with account {account.username}");
+            Account newAccount = new Account(username, password);
+            accounts.Add(newAccount);
+            SaveAccountsToFile(); 
+            SendMessageToClient("ACCOUNT_CREATION_SUCCESS", clientId);
         }
     }
 
-    private void SendResponseToClient(string message)
+    private void SendMessageToClient(string message, int clientId)
     {
         if (client != null && client.Connected)
         {
@@ -171,29 +166,7 @@ public class ServerManager : MonoBehaviour
         }
     }
 
-    public void ReceiveMessageFromClient(int clientId, string message)
-    {
-        string[] parts = message.Split('|');
-        if (parts.Length < 1) return;
-
-        string command = parts[0];
-        if (command == "LOGIN")
-        {
-            if (parts.Length != 3) return;
-            string username = parts[1];
-            string password = parts[2];
-            HandleLoginRequest(clientId, username, password);
-        }
-        else if (command == "CREATE_ACCOUNT")
-        {
-            if (parts.Length != 3) return;
-            string username = parts[1];
-            string password = parts[2];
-            HandleCreateAccountRequest(clientId, username, password);
-        }
-    }
-
-    private void SaveAccounts()
+    private void SaveAccountsToFile()
     {
         string json = JsonUtility.ToJson(new AccountListWrapper { accounts = this.accounts });
         File.WriteAllText(accountsFilePath, json);

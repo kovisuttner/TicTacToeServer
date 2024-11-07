@@ -16,8 +16,11 @@ public class NetworkServer : MonoBehaviour
 
     const int MaxNumberOfClientConnections = 1000;
 
+    public AccountManager accountManager;
+
     void Start()
     {
+        accountManager = FindObjectOfType<AccountManager>();
         networkDriver = NetworkDriver.Create();
         reliableAndInOrderPipeline = networkDriver.CreatePipeline(typeof(FragmentationPipelineStage), typeof(ReliableSequencedPipelineStage));
         nonReliableNotInOrderedPipeline = networkDriver.CreatePipeline(typeof(FragmentationPipelineStage));
@@ -140,6 +143,61 @@ public class NetworkServer : MonoBehaviour
     private void ProcessReceivedMsg(string msg)
     {
         Debug.Log("Msg received = " + msg);
+        string[] msgParts = msg.Split('|');
+
+        if (msgParts[0] == "LOGIN")
+        {
+            string username = msgParts[1];
+            string password = msgParts[2];
+            HandleLogin(username, password);
+        }
+        else if (msgParts[0] == "CREATE_ACCOUNT")
+        {
+            string username = msgParts[1];
+            string password = msgParts[2];
+            HandleCreateAccount(username, password);
+        }
+    }
+
+    private void HandleLogin(string username, string password)
+    {
+        Account account = accountManager.GetAccount(username);  
+        if (account != null && account.password == password)
+        {
+
+            for (int j = 0; j < networkConnections.Length; j++)
+            {
+                SendMessageToClient("LOGIN_SUCCESS|" + username, networkConnections[j]);
+            }
+        }
+        else
+        {
+            for (int j = 0; j < networkConnections.Length; j++)
+            {
+                SendMessageToClient("LOGIN_FAILED|" + username, networkConnections[j]);
+            }
+        }
+    }
+
+    private void HandleCreateAccount(string username, string password)
+    {
+        if (accountManager.AccountExists(username))
+        {
+            for (int j = 0; j < networkConnections.Length; j++)
+            {
+                SendMessageToClient("ACCOUNT_CREATION_FAILED", networkConnections[j]);
+            }
+        }
+        else
+        {
+            Account newAccount = new Account(username, password);
+            accountManager.AddAccount(newAccount);
+
+            for (int j = 0; j < networkConnections.Length; j++)
+            {
+                SendMessageToClient("ACCOUNT_CREATION_SUCCESS", networkConnections[j]);
+            }
+        }
     }
 
     public void SendMessageToClient(string msg, NetworkConnection networkConnection)
@@ -148,9 +206,7 @@ public class NetworkServer : MonoBehaviour
         NativeArray<byte> buffer = new NativeArray<byte>(msgAsByteArray, Allocator.Persistent);
 
 
-        //Driver.BeginSend(m_Connection, out var writer);
         DataStreamWriter streamWriter;
-        //networkConnection.
         networkDriver.BeginSend(reliableAndInOrderPipeline, networkConnection, out streamWriter);
         streamWriter.WriteInt(buffer.Length);
         streamWriter.WriteBytes(buffer);
