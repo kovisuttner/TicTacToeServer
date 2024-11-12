@@ -1,8 +1,8 @@
 using UnityEngine;
-using UnityEngine.Assertions;
 using Unity.Collections;
 using Unity.Networking.Transport;
 using System.Text;
+using System.Collections.Generic;
 
 public class NetworkServer : MonoBehaviour
 {
@@ -13,10 +13,11 @@ public class NetworkServer : MonoBehaviour
     NetworkPipeline nonReliableNotInOrderedPipeline;
 
     const ushort NetworkPort = 8080;
-
     const int MaxNumberOfClientConnections = 1000;
 
     public AccountManager accountManager;
+
+    private Dictionary<string, List<NetworkConnection>> rooms = new Dictionary<string, List<NetworkConnection>>();
 
     void Start()
     {
@@ -44,22 +45,9 @@ public class NetworkServer : MonoBehaviour
 
     void Update()
     {
-        #region Check Input and Send Msg
-
-        if (Input.GetKeyDown(KeyCode.A))
-        {
-            for (int i = 0; i < networkConnections.Length; i++)
-            {
-                SendMessageToClient("Hello client's world, sincerely your network server", networkConnections[i]);
-            }
-        }
-
-        #endregion
-
         networkDriver.ScheduleUpdate().Complete();
 
         #region Remove Unused Connections
-
         for (int i = 0; i < networkConnections.Length; i++)
         {
             if (!networkConnections[i].IsCreated)
@@ -68,20 +56,16 @@ public class NetworkServer : MonoBehaviour
                 i--;
             }
         }
-
         #endregion
 
         #region Accept New Connections
-
         while (AcceptIncomingConnection())
         {
             Debug.Log("Accepted a client connection");
         }
-
         #endregion
 
         #region Manage Network Events
-
         DataStreamReader streamReader;
         NetworkPipeline pipelineUsedToSendEvent;
         NetworkEvent.Type networkEventType;
@@ -93,43 +77,35 @@ public class NetworkServer : MonoBehaviour
 
             while (PopNetworkEventAndCheckForData(networkConnections[i], out networkEventType, out streamReader, out pipelineUsedToSendEvent))
             {
-                if (pipelineUsedToSendEvent == reliableAndInOrderPipeline)
-                    Debug.Log("Network event from: reliableAndInOrderPipeline");
-                else if (pipelineUsedToSendEvent == nonReliableNotInOrderedPipeline)
-                    Debug.Log("Network event from: nonReliableNotInOrderedPipeline");
-
-                switch (networkEventType)
+                if (networkEventType == NetworkEvent.Type.Data)
                 {
-                    case NetworkEvent.Type.Data:
-                        int sizeOfDataBuffer = streamReader.ReadInt();
-                        NativeArray<byte> buffer = new NativeArray<byte>(sizeOfDataBuffer, Allocator.Persistent);
-                        streamReader.ReadBytes(buffer);
-                        byte[] byteBuffer = buffer.ToArray();
-                        string msg = Encoding.Unicode.GetString(byteBuffer);
-                        ProcessReceivedMsg(msg);
-                        buffer.Dispose();
-                        break;
-                    case NetworkEvent.Type.Disconnect:
-                        Debug.Log("Client has disconnected from server");
-                        networkConnections[i] = default(NetworkConnection);
-                        break;
+                    int sizeOfDataBuffer = streamReader.ReadInt();
+                    NativeArray<byte> buffer = new NativeArray<byte>(sizeOfDataBuffer, Allocator.Persistent);
+                    streamReader.ReadBytes(buffer);
+                    byte[] byteBuffer = buffer.ToArray();
+                    string msg = Encoding.Unicode.GetString(byteBuffer);
+                    ProcessReceivedMsg(msg, networkConnections[i]);
+                    buffer.Dispose();
+                }
+                else if (networkEventType == NetworkEvent.Type.Disconnect)
+                {
+                    Debug.Log("Client has disconnected from server");
+                    networkConnections[i] = default(NetworkConnection);
                 }
             }
         }
-
         #endregion
     }
 
     private bool AcceptIncomingConnection()
     {
         NetworkConnection connection = networkDriver.Accept();
-        if (!connection.IsCreated) 
-        return false;
+        if (!connection.IsCreated)
+            return false;
 
         networkConnections.Add(connection);
         return true;
     }
-
 
     private bool PopNetworkEventAndCheckForData(NetworkConnection networkConnection, out NetworkEvent.Type networkEventType, out DataStreamReader streamReader, out NetworkPipeline pipelineUsedToSendEvent)
     {
@@ -140,79 +116,125 @@ public class NetworkServer : MonoBehaviour
         return true;
     }
 
-    private void ProcessReceivedMsg(string msg)
+    private void ProcessReceivedMsg(string message, NetworkConnection connection)
     {
-        Debug.Log("Msg received = " + msg);
-        string[] msgParts = msg.Split('|');
-
-        if (msgParts[0] == "LOGIN")
+        string[] parts = message.Split('|');
+        if (parts.Length < 2)
         {
-            string username = msgParts[1];
-            string password = msgParts[2];
-            HandleLogin(username, password);
+            Debug.Log("Invalid message format.");
+            return;
         }
-        else if (msgParts[0] == "CREATE_ACCOUNT")
+
+        switch (parts[0])
         {
-            string username = msgParts[1];
-            string password = msgParts[2];
-            HandleCreateAccount(username, password);
+            case "LOGIN":
+                HandleLogin(parts[1], parts[2], connection);
+                break;
+            case "CREATE_ACCOUNT":
+                HandleCreateAccount(parts[1], parts[2], connection);
+                break;
+            case "JOIN_OR_CREATE_ROOM":
+                HandleJoinOrCreateRoom(parts[1], connection); // Room name is parts[1]
+                break;
+            case "LEAVE_ROOM":
+                HandleLeaveRoom(connection);
+                break;
+            default:
+                Debug.Log("Unknown request: " + parts[0]);
+                break;
         }
     }
 
-    private void HandleLogin(string username, string password)
+    private void HandleLogin(string username, string password, NetworkConnection connection)
     {
-        Account account = accountManager.GetAccount(username);  
+        Account account = accountManager.GetAccount(username);
         if (account != null && account.password == password)
         {
-
-            for (int j = 0; j < networkConnections.Length; j++)
-            {
-                SendMessageToClient("LOGIN_SUCCESS|" + username, networkConnections[j]);
-            }
+            SendMessageToClient("LOGIN_SUCCESS|" + username, connection);
         }
         else
         {
-            for (int j = 0; j < networkConnections.Length; j++)
-            {
-                SendMessageToClient("LOGIN_FAILED|" + username, networkConnections[j]);
-            }
+            SendMessageToClient("LOGIN_FAILED|" + username, connection);
         }
     }
 
-    private void HandleCreateAccount(string username, string password)
+    private void HandleCreateAccount(string username, string password, NetworkConnection connection)
     {
         if (accountManager.AccountExists(username))
         {
-            for (int j = 0; j < networkConnections.Length; j++)
-            {
-                SendMessageToClient("ACCOUNT_CREATION_FAILED", networkConnections[j]);
-            }
+            SendMessageToClient("ACCOUNT_CREATION_FAILED", connection);
         }
         else
         {
             Account newAccount = new Account(username, password);
             accountManager.AddAccount(newAccount);
+            SendMessageToClient("ACCOUNT_CREATION_SUCCESS", connection);
+        }
+    }
 
-            for (int j = 0; j < networkConnections.Length; j++)
+    private void HandleJoinOrCreateRoom(string roomName, NetworkConnection connection)
+    {
+        if (!rooms.ContainsKey(roomName))
+        {
+            rooms[roomName] = new List<NetworkConnection> { connection };
+            SendMessageToClient("ROOM_CREATED|" + roomName, connection);
+            Debug.Log($"Room {roomName} created and client joined.");
+        }
+        else
+        {
+            if (rooms[roomName].Count < 2)
             {
-                SendMessageToClient("ACCOUNT_CREATION_SUCCESS", networkConnections[j]);
+                rooms[roomName].Add(connection);
+                SendMessageToClient("JOIN_ROOM_SUCCESS|" + roomName, connection);
+
+                if (rooms[roomName].Count == 2)
+                {
+                    foreach (var conn in rooms[roomName])
+                    {
+                        SendMessageToClient("START_GAME", conn);
+                    }
+                }
+            }
+            else
+            {
+                SendMessageToClient("ROOM_FULL", connection);
             }
         }
     }
 
-    public void SendMessageToClient(string msg, NetworkConnection networkConnection)
+    private void HandleLeaveRoom(NetworkConnection connection)
+    {
+        foreach (var room in rooms)
+        {
+            if (room.Value.Contains(connection))
+            {
+                room.Value.Remove(connection);
+                SendMessageToClient("LEFT_ROOM|" + room.Key, connection);
+                Debug.Log($"Client left room {room.Key}");
+                return;
+            }
+        }
+        SendMessageToClient("NOT_IN_ROOM", connection);
+    }
+    private void SendMessageToClient(string msg, NetworkConnection networkConnection)
     {
         byte[] msgAsByteArray = Encoding.Unicode.GetBytes(msg);
         NativeArray<byte> buffer = new NativeArray<byte>(msgAsByteArray, Allocator.Persistent);
 
+        int result = networkDriver.BeginSend(reliableAndInOrderPipeline, networkConnection, out var writer);
 
-        DataStreamWriter streamWriter;
-        networkDriver.BeginSend(reliableAndInOrderPipeline, networkConnection, out streamWriter);
-        streamWriter.WriteInt(buffer.Length);
-        streamWriter.WriteBytes(buffer);
-        networkDriver.EndSend(streamWriter);
+        if (result != 0)
+        {
+            Debug.LogError("Failed to begin send.");
+            return;
+        }
+        writer.WriteInt(buffer.Length);
+        writer.WriteBytes(buffer);
+
+        networkDriver.EndSend(writer);
 
         buffer.Dispose();
     }
+
 
 }
