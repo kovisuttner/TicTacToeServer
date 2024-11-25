@@ -50,4 +50,14 @@ public class AccountManager : MonoBehaviour
         SaveAccountsToFile();
     }
 
+    // Add ValidateLogin method to handle login checks
+    public bool ValidateLogin(string username, string password)
+    {
+        Account account = GetAccount(username);
+        if (account != null && account.password == password)
+        {
+            return true; // Valid login
+        }
+        return false; // Invalid login
+    }
 }

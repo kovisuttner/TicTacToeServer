@@ -119,31 +119,91 @@ public class NetworkServer : MonoBehaviour
     private void ProcessReceivedMsg(string message, NetworkConnection connection)
     {
         string[] parts = message.Split('|');
+
         if (parts.Length < 2)
         {
-            Debug.Log("Invalid message format.");
+            Debug.LogError("Invalid message format: Not enough parts.");
             return;
         }
 
-        switch (parts[0])
+        string messageType = parts[0];
+
+        switch (messageType)
         {
             case "LOGIN":
-                HandleLogin(parts[1], parts[2], connection);
+                if (parts.Length == 3) 
+                {
+                    HandleLogin(parts[1], parts[2], connection);
+                }
+                else
+                {
+                    Debug.LogError("Invalid LOGIN message format.");
+                }
                 break;
+
             case "CREATE_ACCOUNT":
-                HandleCreateAccount(parts[1], parts[2], connection);
+                if (parts.Length == 3) 
+                {
+                    HandleCreateAccount(parts[1], parts[2], connection);
+                }
+                else
+                {
+                    Debug.LogError("Invalid CREATE_ACCOUNT message format.");
+                }
                 break;
+
             case "JOIN_OR_CREATE_ROOM":
-                HandleJoinOrCreateRoom(parts[1], connection); // Room name is parts[1]
+                if (parts.Length == 2) 
+                {
+                    HandleJoinOrCreateRoom(parts[1], connection);
+                }
+                else
+                {
+                    Debug.LogError("Invalid JOIN_OR_CREATE_ROOM message format.");
+                }
                 break;
+
             case "LEAVE_ROOM":
                 HandleLeaveRoom(connection);
                 break;
+
+            case "MOVE":
+                if (parts.Length == 3 && int.TryParse(parts[2], out int index))
+                {
+                    string playerSymbol = parts[1]; 
+                    HandlePlayerMove(playerSymbol, index, connection);
+                }
+                else
+                {
+                    Debug.LogError("Invalid MOVE message format.");
+                }
+                break;
+
             default:
-                Debug.Log("Unknown request: " + parts[0]);
+                Debug.LogError("Unknown request type: " + messageType);
                 break;
         }
     }
+
+
+    private void HandlePlayerMove(string playerSymbol, int index, NetworkConnection connection)
+    {
+        Debug.Log($"Player {playerSymbol} made a move at index {index}");
+
+        foreach (var room in rooms)
+        {
+            if (room.Value.Contains(connection))
+            {
+                foreach (var participant in room.Value)
+                {
+                    string moveMessage = $"MOVE|{playerSymbol}|{index}";
+                    SendMessageToClient(moveMessage, participant);
+                }
+            }
+        }
+    }
+
+
 
     private void HandleLogin(string username, string password, NetworkConnection connection)
     {
@@ -174,33 +234,35 @@ public class NetworkServer : MonoBehaviour
 
     private void HandleJoinOrCreateRoom(string roomName, NetworkConnection connection)
     {
-        if (!rooms.ContainsKey(roomName))
+    if (!rooms.ContainsKey(roomName))
+    {
+        rooms[roomName] = new List<NetworkConnection> { connection };
+        SendMessageToClient("ROOM_CREATED|" + roomName, connection);
+        Debug.Log($"Room {roomName} created and client joined.");
+    }
+    else
+    {
+        if (rooms[roomName].Count < 2)
         {
-            rooms[roomName] = new List<NetworkConnection> { connection };
-            SendMessageToClient("ROOM_CREATED|" + roomName, connection);
-            Debug.Log($"Room {roomName} created and client joined.");
+            rooms[roomName].Add(connection);
+
+            if (rooms[roomName].Count == 2)
+            {
+                foreach (var conn in rooms[roomName])
+                {
+                    SendMessageToClient("START_GAME", conn);
+                }
+            }
         }
         else
         {
-            if (rooms[roomName].Count < 2)
-            {
-                rooms[roomName].Add(connection);
-                SendMessageToClient("JOIN_ROOM_SUCCESS|" + roomName, connection);
-
-                if (rooms[roomName].Count == 2)
-                {
-                    foreach (var conn in rooms[roomName])
-                    {
-                        SendMessageToClient("START_GAME", conn);
-                    }
-                }
-            }
-            else
-            {
-                SendMessageToClient("ROOM_FULL", connection);
-            }
+            // Room is full, add as an observer
+            SendMessageToClient("ROOM_FULL_OBSERVER", connection);
+            Debug.Log($"Room {roomName} is full. Client added as observer.");
         }
     }
+    }
+
 
     private void HandleLeaveRoom(NetworkConnection connection)
     {
@@ -216,6 +278,7 @@ public class NetworkServer : MonoBehaviour
         }
         SendMessageToClient("NOT_IN_ROOM", connection);
     }
+
     private void SendMessageToClient(string msg, NetworkConnection networkConnection)
     {
         byte[] msgAsByteArray = Encoding.Unicode.GetBytes(msg);
@@ -235,6 +298,4 @@ public class NetworkServer : MonoBehaviour
 
         buffer.Dispose();
     }
-
-
 }
